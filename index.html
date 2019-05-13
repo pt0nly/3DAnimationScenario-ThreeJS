@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>TP2 - CG 2016/2017</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+    <style>
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+			background-color: #000000;
+        }
+
+        #blocker {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+        }
+
+        #instructions {
+            width: 100%;
+            height: 100%;
+            display: -webkit-box;
+            display: -moz-box;
+            display: box;
+            -webkit-box-orient: horizontal;
+            -moz-box-orient: horizontal;
+            box-orient: horizontal;
+            -webkit-box-pack: center;
+            -moz-box-pack: center;
+            box-pack: center;
+            -webkit-box-align: center;
+            -moz-box-align: center;
+            box-align: center;
+            color: #ffffff;
+            text-align: center;
+            cursor: pointer;
+        }
+
+		#loading {
+			z-index: 3000;
+		}
+    </style>
+	<!-- Api -->
+    <script src="js/api/three.min.js"></script>
+	<script src="js/api/Detector.js"></script>
+	<script src="js/api/physics/physi.js"></script>
+
+	<script src="js/api/libs/stats.min.js"></script>
+	<script src="js/api/libs/dat.gui.min.js"></script>
+	<script src="js/api/OrbitControls.js"></script>
+
+	<script src="js/api/controls/KeyboardState.js"></script>
+
+	<script src="js/api/postprocessing/EffectComposer.js"></script>
+	<script src="js/api/postprocessing/RenderPass.js"></script>
+	<script src="js/api/postprocessing/ShaderPass.js"></script>
+	<script src="js/api/postprocessing/MaskPass.js"></script>
+
+	<script src="js/api/shaders/CopyShader.js"></script>
+	<script src="js/api/shaders/ColorCorrectionShader.js"></script>
+	<script src="js/api/shaders/VignetteShader.js"></script>
+    <script src="js/api/shaders/OceanShaders.js"></script>
+
+    <script src="js/api/loaders/DDSLoader.js"></script>
+    <script src="js/api/loaders/MTLLoader.js"></script>
+    <script src="js/api/loaders/OBJLoader.js"></script>
+
+	<script src="js/api/loaders/MD2Loader.js"></script>
+	<script src="js/api/MD2Character.js"></script>
+	<!--<script src="js/api/MD2CharacterComplex.js"></script>-->
+
+    <script src="js/app/appGeneral.js"></script>
+	<script src="js/api/SimplexNoise.js"></script>
+	<script src="js/api/GPUComputationRenderer.js"></script>
+    <script src="js/api/Ocean.js"></script>
+	<script src="js/api/threeoctree.js"></script>
+
+	<!-- Assets -->
+	<link href="assets/font-awesome-4.7.0/css/font-awesome.css" rel="stylesheet">
+
+	<!-- App -->
+    <script src="js/app/appObjects.js"></script>
+    <script src="js/app/appLights.js"></script>
+    <script src="js/app/appSkybox.js"></script>
+    <script src="js/app/appControls.js"></script>
+    <script src="js/app/appEngine3D.js"></script>
+</head>
+
+<body>
+	<!-- This is the 'compute shader' for the water heightmap: -->
+	<script id="heightmapFragmentShader" type="x-shader/x-fragment">
+		#include <common>
+
+		uniform vec2 mousePos;
+		uniform float mouseSize;
+		uniform float viscosityConstant;
+
+		#define deltaTime (1.0 / 60.0)
+		#define GRAVITY_CONSTANT (resolution.x * deltaTime * 3.0)
+
+		void main()	{
+			vec2 cellSize = 1.0 / resolution.xy;
+			vec2 uv = gl_FragCoord.xy * cellSize;
+
+			// heightmapValue.x == height
+			// heightmapValue.y == velocity
+			// heightmapValue.z, heightmapValue.w not used
+			vec4 heightmapValue = texture2D(heightmap, uv);
+
+			// Get neighbours
+			vec4 north = texture2D(heightmap, uv + vec2(0.0, cellSize.y));
+			vec4 south = texture2D(heightmap, uv + vec2(0.0, -cellSize.y));
+			vec4 east = texture2D(heightmap, uv + vec2(cellSize.x, 0.0));
+			vec4 west = texture2D(heightmap, uv + vec2(-cellSize.x, 0.0));
+
+			float sump = north.x + south.x + east.x + west.x - 4.0 * heightmapValue.x;
+			float accel = sump * GRAVITY_CONSTANT;
+
+			// Dynamics
+			heightmapValue.y += accel;
+			heightmapValue.x += heightmapValue.y * deltaTime;
+
+			// Viscosity
+			heightmapValue.x += sump * viscosityConstant;
+
+			// Mouse influence
+			float mousePhase = clamp(length((uv - vec2(0.5)) * BOUNDS - vec2(mousePos.x, -mousePos.y)) * PI / mouseSize, 0.0, PI);
+			heightmapValue.x += cos(mousePhase) + 1.0;
+
+			gl_FragColor = heightmapValue;
+		}
+	</script>
+
+	<!-- This is just a smoothing 'compute shader' for using manually: -->
+	<script id="smoothFragmentShader" type="x-shader/x-fragment">
+		uniform sampler2D texture;
+
+		void main()	{
+			vec2 cellSize = 1.0 / resolution.xy;
+			vec2 uv = gl_FragCoord.xy * cellSize;
+
+			// Computes the mean of texel and 4 neighbours
+			vec4 textureValue = texture2D(texture, uv);
+			textureValue += texture2D(texture, uv + vec2(0.0, cellSize.y));
+			textureValue += texture2D(texture, uv + vec2(0.0, -cellSize.y));
+			textureValue += texture2D(texture, uv + vec2(cellSize.x, 0.0));
+			textureValue += texture2D(texture, uv + vec2(-cellSize.x, 0.0));
+
+			textureValue /= 5.0;
+
+			gl_FragColor = textureValue;
+		}
+	</script>
+
+	<!-- This is the water visualization shader, copied from the MeshPhongMaterial and modified: -->
+	<script id="waterVertexShader" type="x-shader/x-vertex">
+		uniform sampler2D heightmap;
+
+		#define PHONG
+
+		varying vec3 vViewPosition;
+
+		#ifndef FLAT_SHADED
+			varying vec3 vNormal;
+		#endif
+
+		#include <common>
+		#include <uv_pars_vertex>
+		#include <uv2_pars_vertex>
+		#include <displacementmap_pars_vertex>
+		#include <envmap_pars_vertex>
+		#include <color_pars_vertex>
+		#include <morphtarget_pars_vertex>
+		#include <skinning_pars_vertex>
+		#include <shadowmap_pars_vertex>
+		#include <logdepthbuf_pars_vertex>
+		#include <clipping_planes_pars_vertex>
+
+		void main() {
+			vec2 cellSize = vec2(1.0 / WIDTH, 1.0 / HEIGHT);
+
+			#include <uv_vertex>
+			#include <uv2_vertex>
+			#include <color_vertex>
+
+			// # include <beginnormal_vertex>
+			// Compute normal from heightmap
+			vec3 objectNormal = vec3(
+					(texture2D(heightmap, uv + vec2(-cellSize.x, 0)).x - texture2D(heightmap, uv + vec2(cellSize.x, 0)).x) * WIDTH / BOUNDS,
+					(texture2D(heightmap, uv + vec2(0, -cellSize.y)).x - texture2D(heightmap, uv + vec2(0, cellSize.y)).x) * HEIGHT / BOUNDS,
+					1.0
+				);
+			//<beginnormal_vertex>
+
+			#include <morphnormal_vertex>
+			#include <skinbase_vertex>
+			#include <skinnormal_vertex>
+			#include <defaultnormal_vertex>
+
+			#ifndef FLAT_SHADED // Normal computed with derivatives when FLAT_SHADED
+				vNormal = normalize(transformedNormal);
+			#endif
+
+			//# include <begin_vertex>
+			float heightValue = texture2D(heightmap, uv).x;
+			vec3 transformed = vec3(position.x, position.y, heightValue);
+			//<begin_vertex>
+
+			#include <displacementmap_vertex>
+			#include <morphtarget_vertex>
+			#include <skinning_vertex>
+			#include <project_vertex>
+			#include <logdepthbuf_vertex>
+			#include <clipping_planes_vertex>
+
+			vViewPosition = -mvPosition.xyz;
+
+			#include <worldpos_vertex>
+			#include <envmap_vertex>
+			#include <shadowmap_vertex>
+		}
+	</script>
+
+    <script>
+		// Texture width for simulation
+		var WIDTH = 512;
+		var HEIGHT = WIDTH / 1.5;
+		var NUM_TEXELS = WIDTH * HEIGHT;
+		// Water size in system units
+		var BOUNDS = 512;
+		var BOUNDS_HALF = BOUNDS * 0.5;
+
+		var container, stats;
+		var camera, scene, renderer, controls;
+		var mouseMoved = false;
+		var mouseCoords = new THREE.Vector2();
+		var raycaster = new THREE.Raycaster();
+
+		var waterMesh;
+		var meshRay;
+		var gpuCompute;
+		var heightmapVariable;
+		var waterUniforms;
+		var smoothShader;
+
+		var simplex = new SimplexNoise();
+
+		var windowHalfX = window.innerWidth / 2;
+		var windowHalfY = window.innerHeight / 2;
+    </script>
+
+	<!-- Load Levels array -->
+	<script src="js/app/appLevels.js"></script>
+
+    <script>
+        let app = new Application();
+
+		app.add(Levels.level[Levels.curLevel - 1]);
+    </script>
+</body>
+
+</html>
